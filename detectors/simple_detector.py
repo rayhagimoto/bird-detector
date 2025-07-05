@@ -8,7 +8,7 @@ class SimpleDetector(AnomalyDetector):
       super().__init__(config, s3)
 
       # -- File names and S3 directory config --
-      self.bucket = config.get('bucket_name', 'your-s3-bucket')
+      self.bucket = config.get('bucket_name', 'axiondm-photos')
       self.state_folder = config.get('state_folder', 'py')
       self.ema_filename = config.get('ema_filename', 'ema.npy')
       self.scores_filename = config.get('scores_filename', 'losses.csv')

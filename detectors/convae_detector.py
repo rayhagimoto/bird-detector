@@ -21,7 +21,7 @@ class ConvDetector(AnomalyDetector):
     super().__init__(config, s3) # saves config to self.config and s3 to self.s3
 
     # -- File names and S3 directory config --
-    self.bucket = config.get('bucket_name', 'your-s3-bucket')
+    self.bucket = config.get('bucket_name', 'axiondm-photos')
     self.state_folder = config.get('state_folder', 'py')
     self.incubation_period = config.get('incubation_period', 200)
     self.incubation_steps = config.get('incubation_steps', 5)
