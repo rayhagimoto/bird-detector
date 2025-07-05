@@ -17,7 +17,14 @@ This branch contains the **ConvDetector** implementation - a sophisticated anoma
 
 ## Installation
 
+This library is designed to be used as a Git submodule. Add it to your project:
+
 ```bash
+# Add as submodule to your project
+git submodule add https://github.com/rayhagimoto/bird-detector.git bird_detector
+
+# Install dependencies
+cd bird_detector
 pip install -r requirements.txt
 ```
 
@@ -26,7 +33,7 @@ pip install -r requirements.txt
 ### Basic Detection
 
 ```python
-from detectors.convae_detector import ConvDetector
+from bird_detector.detectors.convae_detector import ConvDetector
 import boto3
 from PIL import Image
 
