@@ -15,7 +15,14 @@ This branch contains the **Simple Detector** implementation - a lightweight anom
 
 ## Installation
 
+This library is designed to be used as a Git submodule. Add it to your project:
+
 ```bash
+# Add as submodule to your project
+git submodule add https://github.com/rayhagimoto/bird-detector.git bird_detector
+
+# Install dependencies
+cd bird_detector
 pip install -r requirements.txt
 ```
 
@@ -24,7 +31,7 @@ pip install -r requirements.txt
 ### Basic Detection
 
 ```python
-from detectors.simple_detector import SimpleDetector
+from bird_detector.detectors.simple_detector import SimpleDetector
 import boto3
 
 # Initialize detector with configuration and S3 client
