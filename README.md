@@ -112,7 +112,7 @@ Minimal implementation containing only the ConvDetector:
 
 ### Simple Detector
 ```python
-from detectors.simple_detector import SimpleDetector
+from bird_detector.detectors.simple_detector import SimpleDetector
 import boto3
 
 s3_client = boto3.client('s3')
@@ -129,7 +129,7 @@ has_anomaly = detector.predict(image)
 
 ### ConvDetector
 ```python
-from detectors.convae_detector import ConvDetector
+from bird_detector.detectors.convae_detector import ConvDetector
 import boto3
 
 s3_client = boto3.client('s3')
@@ -145,6 +145,19 @@ config = {
 
 detector = ConvDetector(config, s3_client)
 has_anomaly = detector.predict(image)
+```
+
+## Installation
+
+This library is designed to be used as a Git submodule. Add it to your project:
+
+```bash
+# Add as submodule to your project
+git submodule add https://github.com/rayhagimoto/bird-detector.git bird_detector
+
+# Install dependencies
+cd bird_detector
+pip install -r requirements.txt
 ```
 
 ## Development Workflow
