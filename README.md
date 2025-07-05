@@ -94,12 +94,6 @@ The Simple Detector uses an exponential moving average (EMA) approach:
 5. **Threshold Detection**: Use percentile-based threshold after minimum observations
 6. **State Persistence**: Automatically save EMA and scores to S3
 
-## Performance
-
-- **Processing Time**: ~50-100ms per image (256x256)
-- **Memory Usage**: <50MB
-- **Package Size**: <5MB (excluding OpenCV)
-
 ## Dependencies
 
 See `requirements.txt` for the complete list. Core dependencies:
