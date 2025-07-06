@@ -7,6 +7,7 @@ from PIL.Image import Image as PILImage
 from torchvision import transforms
 from collections import deque
 from io import BytesIO
+import os
 
 from .anomaly_detector import AnomalyDetector
 from ..autoencoder.convolution import ConvAutoencoder
@@ -62,7 +63,8 @@ class ConvDetector(AnomalyDetector):
     self.image_size = self.model.image_size
     
     # Load pretrained weights into the model
-    model_weights = self._load_pytorch_weights(self.bucket, self.weights_key)
+    weights_s3_key = f"{self.state_folder}/{self.weights_key}"
+    model_weights = self._load_pytorch_weights(self.bucket, weights_s3_key)
     if model_weights is not None:
         self.model.load_state_dict(model_weights)
     
@@ -222,12 +224,24 @@ class ConvDetector(AnomalyDetector):
 
   def _save_state(self, img_window, anomaly_scores, total_images_processed):
     print(f"_save_state called: bucket={self.bucket}, img_window_key={self.img_window_key}, scores_key={self.scores_key}")
+    # Debug: print anomaly_scores info
+    print(f"anomaly_scores type: {type(anomaly_scores)}")
+    print(f"anomaly_scores length: {len(anomaly_scores)}")
+    print(f"anomaly_scores contents: {anomaly_scores}")
+    # Debug: print img_window info
+    print(f"img_window type: {type(img_window)}")
+    print(f"img_window length: {len(img_window)}")
+    print(f"img_window contents: {[x.shape if hasattr(x, 'shape') else type(x) for x in img_window]}")
     """Save current state to S3."""
     try:
+        # Compose S3 keys with state_folder as prefix
+        img_window_s3_key = f"{self.state_folder}/{self.img_window_key}"
+        scores_s3_key = f"{self.state_folder}/{self.scores_key}"
+
         # Save image window as numpy array
         if len(img_window) > 0:
             window_array = np.stack(list(img_window), axis=0)
-            self._save_npy_to_s3(window_array, self.bucket, self.img_window_key)
+            self._save_npy_to_s3(window_array, self.bucket, img_window_s3_key)
 
         # Only save anomaly scores after incubation period
         if (self.incubation_period is not None and total_images_processed > self.incubation_period):
@@ -236,7 +250,7 @@ class ConvDetector(AnomalyDetector):
                 scores_array = np.array(anomaly_scores)
                 metadata_array = np.array([(score, total_images_processed) for score in anomaly_scores], 
                                         dtype=[('scores', 'f8'), ('total_images', 'i8')])
-                self._save_npy_to_s3(metadata_array, self.bucket, self.scores_key)
+                self._save_npy_to_s3(metadata_array, self.bucket, scores_s3_key)
 
         # Save updated model weights periodically (every 50 images)
         if total_images_processed % 50 == 0:
@@ -252,10 +266,12 @@ class ConvDetector(AnomalyDetector):
         torch.save(self.model.state_dict(), buffer)
         buffer.seek(0)
         
+        # Compose S3 key with state_folder as prefix
+        weights_s3_key = f"{self.state_folder}/{self.weights_key}"
         # Upload to S3
         self.s3.put_object(
             Bucket=self.bucket,
-            Key=self.weights_key,
+            Key=weights_s3_key,
             Body=buffer.getvalue()
         )
         
