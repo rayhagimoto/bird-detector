@@ -9,25 +9,28 @@ from collections import deque
 from io import BytesIO
 
 from .anomaly_detector import AnomalyDetector
-from bird_detector.autoencoder.convolution import ConvAutoencoder
-from bird_detector.autoencoder.scores import localized_reconstruction_score
-from bird_detector.autoencoder.otsu_method import otsu_method
-from bird_detector.autoencoder import get_loss_function, get_optimizer
+from ..autoencoder.convolution import ConvAutoencoder
+from ..autoencoder.scores import localized_reconstruction_score
+from ..autoencoder.otsu_method import otsu_method
+from ..autoencoder import get_loss_function, get_optimizer
 
 
 class ConvDetector(AnomalyDetector):
 
   def __init__(self, config, s3):
+    # Set device first!
+    self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     super().__init__(config, s3) # saves config to self.config and s3 to self.s3
+    print(f"ConvDetector initialized with config: {config}")
 
     # -- File names and S3 directory config --
-    self.bucket = config.get('bucket_name', 'axiondm-photos')
+    self.bucket = config.get('bucket_name', 'your-bucket-here')
     self.state_folder = config.get('state_folder', 'py')
-    self.incubation_period = config.get('incubation_period', 200)
-    self.incubation_steps = config.get('incubation_steps', 5)
-    self.incubation_lr = config.get('incubation_lr', 1e-4)
-    self.steps_per_image = config.get('steps_per_image', 2)
-    self.lr_per_image = config.get('lr_per_image', 1e-6)
+    self.incubation_period = int(config.get('incubation_period', 200))
+    self.incubation_steps = int(config.get('incubation_steps', 5))
+    self.incubation_lr = float(config.get('incubation_lr', 1e-4))
+    self.steps_per_image = int(config.get('steps_per_image', 2))
+    self.lr_per_image = float(config.get('lr_per_image', 1e-6))
 
     # Lambda optimizations
     self.max_window_size = config.get('max_window_size', 200)  # Limit memory usage
@@ -55,8 +58,8 @@ class ConvDetector(AnomalyDetector):
       "upsample_mode": "nearest",
     }
     model_config = config.get('model', default_model_config)
-    self.image_size = model_config['image_size']
     self.model = ConvAutoencoder(**model_config)
+    self.image_size = self.model.image_size
     
     # Load pretrained weights into the model
     model_weights = self._load_pytorch_weights(self.bucket, self.weights_key)
@@ -72,6 +75,7 @@ class ConvDetector(AnomalyDetector):
     self.optimizer = get_optimizer('adam', self.model.parameters(), lr=self.incubation_lr)
 
   def _load_pytorch_weights(self, bucket, key):
+    print(f"Loading PyTorch weights from S3: bucket={bucket}, key={key}")
     """Load PyTorch model weights from S3."""
     try:
         response = self.s3.get_object(Bucket=bucket, Key=key)
@@ -82,54 +86,70 @@ class ConvDetector(AnomalyDetector):
         return None
 
   def predict(self, img: PILImage) -> bool:
+    print("ConvDetector.predict called")
     """Predict if image contains an anomaly using rolling window adaptation."""
     
     try:
         # Transform image to tensor
+        print(f"Transforming image to tensor, original size: {img.size}")
         img_tensor = self._transform_image(img)
+        print(f"Image transformed to tensor with shape: {img_tensor.shape}")
         
         # Load current state from S3
+        print("Loading state from S3...")
         img_window, anomaly_scores, total_images_processed = self._load_state()
+        print(f"Loaded state: img_window len={len(img_window)}, anomaly_scores len={len(anomaly_scores)}, total_images_processed={total_images_processed}")
         
         # Increment image count
         total_images_processed += 1
+
+        # Add new image to rolling window (respect max window size)
+        img_window.append(img_tensor.detach().cpu().numpy())
         
         # Burn-in period: always return False for first incubation_period images
         if total_images_processed <= self.incubation_period:
+            print(f"Burn-in period: {total_images_processed}/{self.incubation_period}")
             # Still add image to window and calculate score for training purposes
-            img_window.append(img_tensor.detach().cpu())
             anomaly_score = self._detect_anomaly(img_tensor)
             anomaly_scores.append(anomaly_score)
             
             # Train model on current window if enabled and we have enough images
             if (self.enable_training and 
                 len(img_window) >= self.min_batch_size):
+                print("Training model on current window (if enabled and enough images)...")
                 self._train_on_window(img_window)
             
             # Save updated state to S3
+            print("Saving state during burn-in period...")
             self._save_state(img_window, anomaly_scores, total_images_processed)
+            print("State saved during burn-in period.")
             
             # Always return False during burn-in period
             return False
         
         # Normal prediction after burn-in period
-        # Add new image to rolling window (respect max window size)
-        img_window.append(img_tensor.detach().cpu())
+        print("Normal prediction after burn-in period")
         
         # Perform anomaly detection on current image
         anomaly_score = self._detect_anomaly(img_tensor)
         anomaly_scores.append(anomaly_score)
+        print(f"Anomaly score: {anomaly_score}")
         
         # Train model on current window if enabled and we have enough images
         if (self.enable_training and 
             len(img_window) >= self.min_batch_size):
+            print("Training model on current window (if enabled and enough images)...")
             self._train_on_window(img_window)
         
         # Calculate dynamic threshold
+        print(f"Calculating dynamic threshold...")
         threshold = self._calculate_dynamic_threshold(anomaly_scores)
+        print(f"Dynamic threshold: {threshold}")
         
         # Save updated state to S3
+        print("Saving updated state after prediction...")
         self._save_state(img_window, anomaly_scores, total_images_processed)
+        print("State saved after prediction.")
         
         # Return anomaly prediction
         return anomaly_score > threshold
@@ -140,6 +160,7 @@ class ConvDetector(AnomalyDetector):
         return False
 
   def _transform_image(self, img: PILImage) -> torch.Tensor:
+    print(f"_transform_image called, input size: {img.size}")
     """Transform PIL image to tensor for model input."""
     # Handle both square and rectangular image sizes
     if isinstance(self.image_size, int):
@@ -155,9 +176,12 @@ class ConvDetector(AnomalyDetector):
     ])
     
     img_tensor = transform(img).unsqueeze(0)  # Add batch dimension
+    print(f"Resized image to: {resize_size}")
+    print(f"Image tensor shape after transform: {img_tensor.shape}")
     return img_tensor.to(self.device)
 
   def _load_state(self):
+    print(f"_load_state called: bucket={self.bucket}, img_window_key={self.img_window_key}, scores_key={self.scores_key}")
     """Load current image window and anomaly scores from S3."""
     try:
         # Load image window
@@ -166,8 +190,11 @@ class ConvDetector(AnomalyDetector):
             # Initialize empty window
             img_window = deque(maxlen=self.max_window_size)
         else:
-            # Convert numpy array back to deque, limit to max_window_size
-            img_window = deque(img_window, maxlen=self.max_window_size)
+            # If loaded as a single numpy array, split into list of arrays
+            if isinstance(img_window, np.ndarray) and img_window.ndim > 1:
+                img_window = deque([img_window[i] for i in range(len(img_window))], maxlen=self.max_window_size)
+            else:
+                img_window = deque(img_window, maxlen=self.max_window_size)
         
         # Load anomaly scores and image count
         scores_data = self._load_npy_from_s3(self.bucket, self.scores_key)
@@ -182,9 +209,10 @@ class ConvDetector(AnomalyDetector):
                 total_images_processed = int(scores_data['total_images'][0])
             else:
                 # Old format - just scores array
-                anomaly_scores = scores_data.tolist()
+                anomaly_scores = np.atleast_1d(scores_data).tolist()
                 total_images_processed = len(anomaly_scores)
         
+        print(f"Loaded img_window (len={len(img_window)}), anomaly_scores (len={len(anomaly_scores)}), total_images_processed={total_images_processed}")
         return img_window, anomaly_scores, total_images_processed
         
     except Exception as e:
@@ -193,25 +221,26 @@ class ConvDetector(AnomalyDetector):
         return deque(maxlen=self.max_window_size), [], 0
 
   def _save_state(self, img_window, anomaly_scores, total_images_processed):
+    print(f"_save_state called: bucket={self.bucket}, img_window_key={self.img_window_key}, scores_key={self.scores_key}")
     """Save current state to S3."""
     try:
         # Save image window as numpy array
         if len(img_window) > 0:
-            window_array = torch.stack(list(img_window)).cpu().numpy()
+            window_array = np.stack(list(img_window), axis=0)
             self._save_npy_to_s3(window_array, self.bucket, self.img_window_key)
-        
-        # Save anomaly scores with metadata
-        if len(anomaly_scores) > 0:
-            # Create structured array with scores and metadata
-            scores_array = np.array(anomaly_scores)
-            metadata_array = np.array([(score, total_images_processed) for score in anomaly_scores], 
-                                    dtype=[('scores', 'f8'), ('total_images', 'i8')])
-            self._save_npy_to_s3(metadata_array, self.bucket, self.scores_key)
-            
+
+        # Only save anomaly scores after incubation period
+        if (self.incubation_period is not None and total_images_processed > self.incubation_period):
+            if len(anomaly_scores) > 0:
+                # Create structured array with scores and metadata
+                scores_array = np.array(anomaly_scores)
+                metadata_array = np.array([(score, total_images_processed) for score in anomaly_scores], 
+                                        dtype=[('scores', 'f8'), ('total_images', 'i8')])
+                self._save_npy_to_s3(metadata_array, self.bucket, self.scores_key)
+
         # Save updated model weights periodically (every 50 images)
         if total_images_processed % 50 == 0:
             self._save_model_weights()
-            
     except Exception as e:
         print(f"Error saving state to S3: {e}")
 
@@ -265,7 +294,7 @@ class ConvDetector(AnomalyDetector):
     
     try:
         # Convert window to tensor dataset
-        window_tensors = torch.stack(list(img_window)).detach().requires_grad_(True)
+        window_tensors = torch.from_numpy(np.stack(list(img_window))).detach().requires_grad_(True)
         window_dataset = torch.utils.data.TensorDataset(window_tensors, window_tensors)
         window_dataloader = torch.utils.data.DataLoader(
             window_dataset, 
