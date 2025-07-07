@@ -22,9 +22,8 @@ class SimpleDetector(AnomalyDetector):
       self.image_size = config.get('image_size', [64, 64]) 
 
       # -- Files needed for inference --      
-      # These should be done concurrently.
       self.ema = super()._load_npy_from_s3(self.bucket, self.ema_key)
-      self.scores = super()._load_csv_from_s3(self.bucket, self.scores_key)
+      self.scores = super()._load_csv_from_s3(self.bucket, self.scores_key) or []
 
       # -- Anomaly detection config -- 
       self.percentile = config.get('percentile', 98)
