@@ -1,112 +1,67 @@
-# Bird Detector - Simple Branch
+# Bird Detector - Simple and OpenCV Pipelines
 
 A lightweight bird detection library optimized for AWS Lambda deployment with minimal dependencies.
 
 ## Overview
 
-This branch contains the **Simple Detector** implementation - a lightweight anomaly detection system that doesn't require PyTorch or heavy ML dependencies. Perfect for serverless deployments where package size and cold start times are critical.
+This branch contains two detector implementations:
+- **Simple Detector**: A lightweight anomaly detection system using statistical thresholds (see previous docs).
+- **OpenCV Detector**: An OpenCV-based anomaly detection pipeline that requires **no pre-training** and works out-of-the-box on new data.
 
-## Features
+## OpenCV Detector (No Pre-Training Required)
 
-- **Lightweight**: No PyTorch dependencies
-- **Fast**: Optimized for real-time processing
-- **Serverless-ready**: Minimal package size for AWS Lambda
-- **Configurable**: YAML-based configuration system
+The **OpenCVDetector** uses a classic computer vision approach:
+- **No pre-training or ML model is required.**
+- Maintains an **Exponential Moving Average (EMA)** of previous images as a background model.
+- For each new image:
+  1. The image is resized and normalized.
+  2. The EMA is updated with the new image.
+  3. The luminance difference between the current image and EMA is computed.
+  4. The difference map is blurred and thresholded to create a binary mask.
+  5. Contours are extracted and filtered by area, aspect ratio, vertical position, and contrast.
+  6. If a valid contour is found, the image is flagged as an anomaly (e.g., a bird is present).
+- The EMA is saved to S3 after each image, so the background model is persistent across invocations.
+- Detected anomaly image keys are appended to `anomalies.csv` in S3.
 
-## Installation
+### Configuration Example
 
-This library is designed to be used as a Git submodule. Add it to your project:
-
-```bash
-# Add as submodule to your project
-git submodule add https://github.com/rayhagimoto/bird-detector.git bird_detector
-
-# Install dependencies
-cd bird_detector
-pip install -r requirements.txt
 ```
+bucket_name: axiondm-photos
+state_folder: py
+ema_filename: ema.npy
+image_size: [128, 128]
+alpha: 0.05
+threshold: 0.15
+blur_sigma: 0.5
+min_area_frac: 0.0015
+max_area_frac: 0.05
+exclude_bottom: true
+aspect_ratio_max: 2.0
+preferred_vertical_range: [0.15, 0.85]
+min_contrast: 10
+```
+
+### Key Features
+- **No ML training required**: Works immediately on new deployments.
+- **Fast and lightweight**: Suitable for serverless and edge environments.
+- **Configurable**: All detection parameters are set via YAML config.
+- **Persistent background model**: EMA is updated and saved after each image.
 
 ## Usage
 
-### Basic Detection
+### OpenCV Detector
 
 ```python
-from bird_detector.detectors.simple_detector import SimpleDetector
+from bird_detector.detectors.opencv_detector import OpenCVDetector
 import boto3
 
-# Initialize detector with configuration and S3 client
 s3_client = boto3.client('s3')
-config = {
-    'bucket_name': 'your-s3-bucket',
-    'state_folder': 'py',
-    'image_size': [64, 64],
-    'percentile': 98,
-    'alpha': 0.05,
-    'min_observations': 25
-}
+config = {...}  # See above
 
-detector = SimpleDetector(config, s3_client)
-
-# Process a PIL Image
-from PIL import Image
-img = Image.open("path/to/image.jpg")
-has_anomaly = detector.predict(img)
-print(f"Has anomaly: {has_anomaly}")
+detector = OpenCVDetector(config, s3_client)
+result = detector.predict(pil_image)
+print(f"Anomaly detected: {result}")
 ```
-
-### Configuration
-
-The detector requires a configuration dictionary and S3 client:
-
-```python
-config = {
-    'bucket_name': 'your-s3-bucket',      # S3 bucket for state storage
-    'state_folder': 'py',                 # Folder within bucket for state files
-    'ema_filename': 'ema.npy',           # Filename for exponential moving average
-    'scores_filename': 'losses.csv',     # Filename for anomaly scores
-    'image_size': [64, 64],              # Target image size [width, height]
-    'percentile': 98,                    # Percentile for anomaly threshold
-    'alpha': 0.05,                       # EMA smoothing factor
-    'min_observations': 25               # Minimum observations before detection
-}
-```
-
-## API Reference
-
-### SimpleDetector.predict()
-
-Processes a PIL Image and returns whether an anomaly is detected.
-
-**Parameters:**
-- `img` (PIL.Image): Input image to analyze
-
-**Returns:**
-- `bool`: `True` if anomaly detected, `False` otherwise
-
-**Algorithm:**
-1. Resizes image to configured size and normalizes to [0,1]
-2. Flattens image and computes exponential moving average (EMA)
-3. Calculates anomaly score as log10 of mean squared error
-4. Compares score against percentile threshold (after minimum observations)
-5. Automatically saves updated EMA and scores to S3
-
-## Architecture
-
-The Simple Detector uses an exponential moving average (EMA) approach:
-
-1. **Image Preprocessing**: Resize to configured size and normalize to [0,1]
-2. **Feature Extraction**: Flatten image to 1D array
-3. **EMA Computation**: Maintain running average of image features
-4. **Anomaly Scoring**: Calculate log10 of mean squared error from EMA
-5. **Threshold Detection**: Use percentile-based threshold after minimum observations
-6. **State Persistence**: Automatically save EMA and scores to S3
-
-## Dependencies
-
-See `requirements.txt` for the complete list. Core dependencies:
-- NumPy - Numerical operations
-- PIL (Pillow) - Image processing
-- boto3 - AWS S3 client (for state persistence)
 
 ## License
 
