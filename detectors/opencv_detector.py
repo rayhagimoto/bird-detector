@@ -21,6 +21,8 @@ class OpenCVDetector(AnomalyDetector):
         self.aspect_ratio_max = config.get('aspect_ratio_max', 2.0)
         self.preferred_vertical_range = tuple(config.get('preferred_vertical_range', [0.15, 0.85]))
         self.min_contrast = config.get('min_contrast', 10)
+        self.min_observations = config.get('min_observations', 10)
+        self.counter_key = f'{self.state_folder}/opencv_counter.txt'
 
     def _compute_luminance(self, x):
         r, g, b = x[..., 0], x[..., 1], x[..., 2]
@@ -86,6 +88,16 @@ class OpenCVDetector(AnomalyDetector):
                 continue
         return best_contour
 
+    def _load_counter(self):
+        try:
+            response = self.s3.get_object(Bucket=self.bucket, Key=self.counter_key)
+            return int(response['Body'].read().decode('utf-8').strip())
+        except Exception:
+            return 0
+
+    def _save_counter(self, count):
+        self.s3.put_object(Bucket=self.bucket, Key=self.counter_key, Body=str(count).encode('utf-8'))
+
     def predict(self, img: Image.Image) -> bool:
         # Convert PIL Image to numpy array and resize
         img_np = np.asarray(img.convert("RGB").resize(self.image_size, Image.BICUBIC), dtype=np.uint8)
@@ -98,6 +110,12 @@ class OpenCVDetector(AnomalyDetector):
         ema = (1 - self.alpha) * ema + self.alpha * img_np
         # Save updated EMA
         super()._save_npy_to_s3(ema, self.bucket, self.ema_key)
+        # Load and increment counter
+        count = self._load_counter() + 1
+        self._save_counter(count)
+        if count < self.min_observations:
+            print(f"[OpenCVDetector] Not enough observations yet: {count}/{self.min_observations}")
+            return False
         # Anomaly detection
         curr_lum = self._compute_luminance(img_np)
         ema_lum = self._compute_luminance(ema)
