@@ -27,7 +27,6 @@ class ConvDetector(AnomalyDetector):
 
     # -- File names and S3 directory config --
     self.bucket = config.get('bucket_name', 'your-bucket-here')
-    self.state_folder = config.get('state_folder', 'py')
     self.incubation_period = int(config.get('incubation_period', 200))
     self.incubation_steps = int(config.get('incubation_steps', 5))
     self.incubation_lr = float(config.get('incubation_lr', 1e-4))
@@ -43,9 +42,8 @@ class ConvDetector(AnomalyDetector):
     # Assume state_folder contains:
     # - weights.pth: ConvAE weights
     # - scores.npy: 
-    self.scores_key = config.get('scores_key', 'scores.npy')
-    self.weights_key = config.get('weights_key', 'model_weights.pth')
-    self.img_window_key = config.get('img_window_key', 'img_window.npy')
+    self.weights_key = config.get('weights_key', 'py/model_weights.pth')
+    self.state_dict_s3_key = config.get('state_dict_key', 'py/state_dict.pkl')
 
 
     # -- Configure the Autoencoder --
@@ -64,8 +62,7 @@ class ConvDetector(AnomalyDetector):
     self.image_size = self.model.image_size
     
     # Load pretrained weights into the model
-    weights_s3_key = f"{self.state_folder}/{self.weights_key}"
-    model_weights = self._load_pytorch_weights(self.bucket, weights_s3_key)
+    model_weights = self._load_pytorch_weights(self.bucket, self.weights_key)
     if model_weights is not None:
         self.model.load_state_dict(model_weights)
     
@@ -100,21 +97,25 @@ class ConvDetector(AnomalyDetector):
         
         # Load current state from S3
         print("Loading state from S3...")
-        img_window, anomaly_scores, total_images_processed = self._load_state()
-        print(f"Loaded state: img_window len={len(img_window)}, anomaly_scores len={len(anomaly_scores)}, total_images_processed={total_images_processed}")
+        img_window, _, total_images_processed, state_dict = self._load_state()
+        print(f"Loaded state: img_window len={len(img_window)}, total_images_processed={total_images_processed}")
         
         # Increment image count
         total_images_processed += 1
 
         # Add new image to rolling window (respect max window size)
         img_window.append(img_tensor.squeeze(0).detach().cpu().numpy())
+        state_dict['img_window'] = list(img_window)
+        state_dict['total_images_processed'] = total_images_processed
         
         # Burn-in period: always return False for first incubation_period images
         if total_images_processed <= self.incubation_period:
             print(f"Burn-in period: {total_images_processed}/{self.incubation_period}")
             # Still add image to window and calculate score for training purposes
+            anomaly_scores = state_dict.get('incubation_anomaly_scores', [])
             anomaly_score = self._detect_anomaly(img_tensor)
             anomaly_scores.append(anomaly_score)
+            state_dict['incubation_anomaly_scores'] = anomaly_scores
             
             # Train model on current window if enabled and we have enough images
             if (self.enable_training and 
@@ -124,7 +125,7 @@ class ConvDetector(AnomalyDetector):
             
             # Save updated state to S3
             print("Saving state during burn-in period...")
-            self._save_state(img_window, anomaly_scores, total_images_processed)
+            self._save_state(state_dict)
             print("State saved during burn-in period.")
             
             # Always return False during burn-in period
@@ -134,8 +135,10 @@ class ConvDetector(AnomalyDetector):
         print("Normal prediction after burn-in period")
         
         # Perform anomaly detection on current image
+        anomaly_scores = state_dict.get('anomaly_scores', [])
         anomaly_score = self._detect_anomaly(img_tensor)
         anomaly_scores.append(anomaly_score)
+        state_dict['anomaly_scores'] = anomaly_scores
         print(f"Anomaly score: {anomaly_score}")
         
         # Train model on current window if enabled and we have enough images
@@ -144,14 +147,14 @@ class ConvDetector(AnomalyDetector):
             print("Training model on current window (if enabled and enough images)...")
             self._train_on_window(img_window)
         
-        # Calculate dynamic threshold
+        # Only calculate threshold and do inference after incubation
         print(f"Calculating dynamic threshold...")
         threshold = self._calculate_dynamic_threshold(anomaly_scores)
         print(f"Dynamic threshold: {threshold}")
         
         # Save updated state to S3
         print("Saving updated state after prediction...")
-        self._save_state(img_window, anomaly_scores, total_images_processed)
+        self._save_state(state_dict)
         print("State saved after prediction.")
         
         # Return anomaly prediction
@@ -187,9 +190,8 @@ class ConvDetector(AnomalyDetector):
     print(f"_load_state called: bucket={self.bucket}, state_dict_key=state_dict.pkl")
     """Load current state (img_window, anomaly_scores, total_images_processed) from S3 using pickle."""
     try:
-        state_dict_s3_key = f"{self.state_folder}/state_dict.pkl"
         # Load pickled state dict from S3
-        state_bytes = self._load_bytes_from_s3(self.bucket, state_dict_s3_key)
+        state_bytes = self._load_bytes_from_s3(self.bucket, self.state_dict_s3_key)
         if state_bytes is not None:
             state_dict = pickle.loads(state_bytes)
             img_window = deque(state_dict.get('img_window', []), maxlen=self.max_window_size)
@@ -197,41 +199,32 @@ class ConvDetector(AnomalyDetector):
             total_images_processed = state_dict.get('total_images_processed', 0)
             print(f"[DEBUG][LOAD] total_images_processed loaded from S3: {total_images_processed}")
         else:
+            state_dict = {}
             img_window = deque(maxlen=self.max_window_size)
             anomaly_scores = []
             total_images_processed = 0
             print(f"[DEBUG][LOAD] No state_dict found in S3. total_images_processed set to 0.")
         print(f"Loaded img_window (len={len(img_window)}), anomaly_scores (len={len(anomaly_scores)}), total_images_processed={total_images_processed}")
-        return img_window, anomaly_scores, total_images_processed
+        return img_window, anomaly_scores, total_images_processed, state_dict
     except Exception as e:
         print(f"Error loading state from S3: {e}")
         print(f"[DEBUG][LOAD] Exception occurred. total_images_processed set to 0.")
-        return deque(maxlen=self.max_window_size), [], 0
+        return deque(maxlen=self.max_window_size), [], 0, {}
 
-  def _save_state(self, img_window, anomaly_scores, total_images_processed):
+  def _save_state(self, state_dict):
     print(f"_save_state called: bucket={self.bucket}, state_dict_key=state_dict.pkl")
-    print(f"[DEBUG][SAVE] total_images_processed to be saved to S3: {total_images_processed}")
-    print(f"anomaly_scores type: {type(anomaly_scores)}")
-    print(f"anomaly_scores length: {len(anomaly_scores)}")
-    print(f"anomaly_scores contents: {anomaly_scores}")
-    print(f"img_window type: {type(img_window)}")
-    print(f"img_window length: {len(img_window)}")
-    print(f"img_window contents: {[x.shape if hasattr(x, 'shape') else type(x) for x in img_window]}")
+    print(f"[DEBUG][SAVE] total_images_processed to be saved to S3: {state_dict.get('total_images_processed')}")
+    print(f"img_window type: {type(state_dict.get('img_window'))}")
+    print(f"img_window length: {len(state_dict.get('img_window', []))}")
+    print(f"img_window contents: {[x.shape if hasattr(x, 'shape') else type(x) for x in state_dict.get('img_window', [])]}")
     print("[INFO] total_images_processed is updated in the predict() method: it is incremented by 1 each time a new image is processed.")
     """Save current state to S3 using pickle."""
     try:
-        state_dict_s3_key = f"{self.state_folder}/state_dict.pkl"
-        # Convert img_window to list for pickling
-        state_dict = {
-            'img_window': list(img_window),
-            'anomaly_scores': anomaly_scores,
-            'total_images_processed': total_images_processed
-        }
         state_bytes = pickle.dumps(state_dict)
-        self._save_bytes_to_s3(state_bytes, self.bucket, state_dict_s3_key)
-        print(f"[DEBUG] state_dict saved to S3 at {state_dict_s3_key}")
-        if total_images_processed % 50 == 0:
-            self._save_model_weights()
+        self._save_bytes_to_s3(state_bytes, self.bucket, self.state_dict_s3_key)
+        print(f"[DEBUG] state_dict saved to S3 at {self.state_dict_s3_key}")
+        self._save_model_weights()
+        print(f"[DEBUG] model_weights saved to S3 at {self.weights_key}")
     except Exception as e:
         print(f"Error saving state to S3: {e}")
 
@@ -243,12 +236,10 @@ class ConvDetector(AnomalyDetector):
         torch.save(self.model.state_dict(), buffer)
         buffer.seek(0)
         
-        # Compose S3 key with state_folder as prefix
-        weights_s3_key = f"{self.state_folder}/{self.weights_key}"
         # Upload to S3
         self.s3.put_object(
             Bucket=self.bucket,
-            Key=weights_s3_key,
+            Key=self.weights_key,
             Body=buffer.getvalue()
         )
         
@@ -356,7 +347,7 @@ class ConvDetector(AnomalyDetector):
   def get_current_state(self):
     """Get current state information for monitoring."""
     try:
-        img_window, anomaly_scores, total_images_processed = self._load_state()
+        img_window, anomaly_scores, total_images_processed, state_dict = self._load_state()
         threshold = self._calculate_dynamic_threshold(anomaly_scores)
         
         return {
