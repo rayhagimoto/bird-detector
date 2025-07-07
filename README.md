@@ -1,12 +1,10 @@
-# Bird Detector - Simple and OpenCV Pipelines
+# Bird Detector - OpenCV Pipeline
 
 A lightweight bird detection library optimized for AWS Lambda deployment with minimal dependencies.
 
 ## Overview
 
-This branch contains two detector implementations:
-- **Simple Detector**: A lightweight anomaly detection system using statistical thresholds (see previous docs).
-- **OpenCV Detector**: An OpenCV-based anomaly detection pipeline that requires **no pre-training** and works out-of-the-box on new data.
+This branch contains the **OpenCV Detector**: an OpenCV-based anomaly detection pipeline that requires **no pre-training** and works out-of-the-box on new data.
 
 ## OpenCV Detector (No Pre-Training Required)
 
