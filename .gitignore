@@ -36,3 +36,9 @@ env/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
