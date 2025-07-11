@@ -191,7 +191,7 @@ def process_image(
     filename: Optional[str] = None
 ) -> Tuple[DetectionResult, DetectionState]:
     """
-    Process a single image for anomaly detection using functional approach.
+    Process a single image for anomaly detection
     
     Args:
         image: PIL Image to process
