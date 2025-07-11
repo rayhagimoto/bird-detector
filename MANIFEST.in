@@ -1,0 +1,12 @@
+include README.md
+include requirements.txt
+include LICENSE
+include .gitignore
+recursive-include bird_detector *.yaml
+recursive-include bird_detector *.yml
+recursive-include bird_detector *.json
+recursive-include bird_detector *.md
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude Thumbs.db 
