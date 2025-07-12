@@ -8,13 +8,11 @@ This module provides various anomaly detection approaches:
 """
 
 from .anomaly_detector import AnomalyDetector
-from .simple_detector import SimpleDetector
 from .convae_detector import ConvDetector
 from .opencv_detector import OpenCVDetector
 
 __all__ = [
     "AnomalyDetector",
-    "SimpleDetector",
     "ConvDetector",
     "OpenCVDetector",
 ]

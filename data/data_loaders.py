@@ -4,8 +4,12 @@ Data loaders for bird detection datasets.
 
 import os
 import yaml
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Callable, Tuple
 from pathlib import Path
+from torch.utils.data import Dataset
+from PIL import Image
+import torch
+from torchvision import transforms
 
 
 def get_raw_data_config(set_id: int) -> Dict[str, Any]:
@@ -29,35 +33,69 @@ def get_raw_data_config(set_id: int) -> Dict[str, Any]:
     return config
 
 
-class SimpleBirdDataset:
-    """Simple dataset for bird detection."""
-    
-    def __init__(self, data_dir: str, transform=None):
-        self.data_dir = data_dir
-        self.transform = transform
-        # Implementation would go here
-        
-    def __len__(self):
-        # Implementation would go here
-        return 0
-        
-    def __getitem__(self, idx):
-        # Implementation would go here
-        pass
+class SimpleBirdDataset(Dataset):
+    """
+    Dataset for bird detection from a directory of JPG images.
+    Returns (image_tensor, filename).
+    """
+    def __init__(self, data_dir: str, image_size: int, transform: Optional[Callable] = None):
+        self.data_dir = Path(data_dir)
+        self.image_size = image_size
+        self.filenames = sorted([
+            f for f in os.listdir(self.data_dir)
+            if f.lower().endswith('.jpg')
+        ])
+        if transform is not None:
+            self.transform = transform
+        else:
+            self.transform = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                # Optionally add normalization here if your model expects it
+                # transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+            ])
 
-
-class MultiSetBirdDataset:
-    """Multi-set dataset for bird detection."""
-    
-    def __init__(self, set_ids: List[int], transform=None):
-        self.set_ids = set_ids
-        self.transform = transform
-        # Implementation would go here
-        
     def __len__(self):
-        # Implementation would go here
-        return 0
-        
-    def __getitem__(self, idx):
-        # Implementation would go here
-        pass 
+        return len(self.filenames)
+
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, str]:
+        img_name = self.filenames[idx]
+        img_path = self.data_dir / img_name
+        image = Image.open(img_path).convert('RGB')
+        image = self.transform(image)
+        return image, img_name
+
+class MultiSetBirdDataset(Dataset):
+    """
+    Dataset for bird detection from multiple directories of JPG images.
+    Returns (image_tensor, filename).
+    """
+    def __init__(self, data_dirs: list, image_size: int, transform: Optional[Callable] = None):
+        self.data_dirs = [Path(d) for d in data_dirs]
+        self.image_size = image_size
+        self.filenames = []
+        self.filepaths = []
+        for d in self.data_dirs:
+            for f in sorted(os.listdir(d)):
+                if f.lower().endswith('.jpg'):
+                    self.filenames.append(f)
+                    self.filepaths.append(d / f)
+        if transform is not None:
+            self.transform = transform
+        else:
+            self.transform = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                # Optionally add normalization here if your model expects it
+                # transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+            ])
+
+    def __len__(self):
+        return len(self.filepaths)
+
+    def __getitem__(self, idx) -> Tuple[torch.Tensor, str]:
+        img_path = self.filepaths[idx]
+        img_name = img_path.name
+        image = Image.open(img_path).convert('RGB')
+        image = self.transform(image)
+        return image, img_name 

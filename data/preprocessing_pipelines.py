@@ -14,6 +14,7 @@ import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
+from PIL import Image
 
 from .raw_image_utils import load_arw_image, arw_to_jpg
 from .data_loaders import get_raw_data_config
@@ -64,6 +65,50 @@ def convert_to_jpg_and_resize(
         f.write(jpg_bytes)
 
 
+def convert_jpg_to_jpg_and_resize(
+    input_path: Union[str, Path],
+    output_path: Union[str, Path],
+    target_size: int = 256,
+    jpg_quality: int = 95
+) -> None:
+    """
+    Convert JPG image to resized JPG format with shortest side = target_size px while preserving aspect ratio.
+    
+    Args:
+        input_path: Path to JPG image file
+        output_path: Path to save the processed JPG image
+        target_size: Target size for shortest side (default: 256)
+        jpg_quality: JPG compression quality (1-100, default: 95)
+    """
+    # Load the JPG image using PIL for better compatibility
+    with Image.open(input_path) as img:
+        # Convert to RGB if needed
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Get image dimensions
+        width, height = img.size
+        
+        # Calculate new dimensions preserving aspect ratio
+        if height < width:
+            # Portrait orientation
+            new_height = target_size
+            new_width = int(width * (target_size / height))
+        else:
+            # Landscape orientation
+            new_width = target_size
+            new_height = int(height * (target_size / width))
+        
+        # Resize image
+        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        # Save to file with specified quality
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        resized_img.save(output_path, 'JPEG', quality=jpg_quality, optimize=True)
+
+
 def process_one_file(args):
     arw_file, output_file, target_size, jpg_quality, overwrite = args
     try:
@@ -84,6 +129,28 @@ def process_one_file(args):
         return (str(arw_file), True, None)
     except Exception as e:
         return (str(arw_file), False, str(e))
+
+
+def process_one_jpg_file(args):
+    jpg_file, output_file, target_size, jpg_quality, overwrite = args
+    try:
+        # Skip if file exists and overwrite is False
+        if not overwrite and output_file.exists():
+            return (str(jpg_file), True, "skipped (already exists)")
+        
+        # Add memory cleanup before processing each file
+        import gc
+        gc.collect()
+        
+        convert_jpg_to_jpg_and_resize(
+            input_path=jpg_file,
+            output_path=output_file,
+            target_size=target_size,
+            jpg_quality=jpg_quality
+        )
+        return (str(jpg_file), True, None)
+    except Exception as e:
+        return (str(jpg_file), False, str(e))
 
 
 def process_set_to_jpg256(
@@ -177,12 +244,113 @@ def process_set_to_jpg256(
     }
 
 
+def process_jpg_to_jpg256(
+    set_id: int,
+    output_dir: Union[str, Path] = "data/interim/jpg256",
+    jpg_quality: int = 95,
+    target_size: int = 256,
+    test_mode: bool = False,
+    max_files: int = 10,
+    overwrite: bool = False
+) -> dict:
+    """
+    Process all JPG images in a data set to JPG format with shortest side = target_size px.
+    Parallelized using ProcessPoolExecutor with 5GB memory limit.
+    
+    Args:
+        set_id: Data set ID (e.g., 2 for set_2) - assumes JPG files are in a corresponding directory
+        output_dir: Directory to save processed images
+        jpg_quality: JPG compression quality (1-100)
+        target_size: Target size for shortest side (default: 256)
+        test_mode: If True, only process first max_files files
+        max_files: Maximum number of files to process in test mode
+        overwrite: If False, skip files that already exist (default: False)
+    """
+    # Get data set configuration for JPG directory
+    config = get_raw_data_config(set_id)
+    if not config:
+        raise ValueError(f"Configuration not found for set {set_id}")
+    
+    # Assume JPG files are in a JPG subdirectory of the raw data path
+    raw_data_path = Path(config['path'])
+    jpg_data_path = raw_data_path / "JPG"  # Common convention for JPG subdirectories
+    
+    # If JPG subdirectory doesn't exist, try the main directory
+    if not jpg_data_path.exists():
+        jpg_data_path = raw_data_path
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if not jpg_data_path.exists():
+        raise ValueError(f"JPG directory does not exist: {jpg_data_path}")
+    
+    # Find all JPG files (case-insensitive)
+    jpg_files = list(jpg_data_path.glob("*.jpg")) + list(jpg_data_path.glob("*.JPG")) + list(jpg_data_path.glob("*.jpeg")) + list(jpg_data_path.glob("*.JPEG"))
+    
+    if not jpg_files:
+        print(f"No JPG files found in {jpg_data_path}")
+        return {"processed_files": 0, "errors": 0, "output_dir": str(output_dir)}
+    
+    # Limit files in test mode
+    if test_mode:
+        jpg_files = jpg_files[:max_files]
+        print(f"TEST MODE: Processing only first {len(jpg_files)} files from set {set_id}")
+    else:
+        print(f"Processing {len(jpg_files)} JPG files from set {set_id} in parallel...")
+    
+    processed_count = 0
+    error_count = 0
+    results = []
+    
+    # Prepare arguments for each file
+    file_args = [
+        (jpg_file, output_dir / (jpg_file.stem + ".jpg"), target_size, jpg_quality, overwrite)
+        for jpg_file in jpg_files
+    ]
+    
+    # Calculate safe number of workers based on memory constraints
+    # Each JPG file (~5MB) + processing overhead (~50MB) = ~55MB per worker
+    # With ~5GB available RAM, we can safely use ~80 workers
+    # But be conservative and use fewer to avoid memory issues
+    available_ram_gb = 5  # Conservative estimate
+    memory_per_worker_gb = 0.1  # 100MB per worker (JPGs are smaller than ARWs)
+    safe_workers = int(available_ram_gb / memory_per_worker_gb)
+    max_workers = min(safe_workers, 16, multiprocessing.cpu_count())  # Cap at 16 for stability
+    print(f"Using {max_workers} workers (memory-safe configuration)")
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_one_jpg_file, args) for args in file_args]
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Converting JPG to JPG"):
+            jpg_file, success, error = f.result()
+            if success:
+                processed_count += 1
+            else:
+                error_count += 1
+                print(f"Error processing {jpg_file}: {error}")
+            results.append((jpg_file, success, error))
+    
+    print(f"Processing complete. Output saved to {output_dir}")
+    print(f"Processed: {processed_count}, Errors: {error_count}")
+    
+    return {
+        "processed_files": processed_count,
+        "errors": error_count,
+        "output_dir": str(output_dir),
+        "set_id": set_id,
+        "jpg_quality": jpg_quality,
+        "target_size": target_size,
+        "input_path": str(jpg_data_path),
+        "results": results
+    }
+
+
 def main():
     """Command-line interface for preprocessing pipelines."""
     parser = argparse.ArgumentParser(description="Bird watching data preprocessing")
     parser.add_argument(
         "pipeline",
-        choices=["convert_to_jpg_and_resize"],
+        choices=["convert_to_jpg_and_resize", "process_jpg_to_jpg256"],
         help="Preprocessing pipeline to run"
     )
     parser.add_argument(
@@ -219,6 +387,14 @@ def main():
     
     if args.pipeline == "convert_to_jpg_and_resize":
         process_set_to_jpg256(
+            set_id=args.set_id,
+            output_dir=args.output_dir,
+            jpg_quality=args.jpg_quality,
+            target_size=args.target_size,
+            overwrite=args.overwrite
+        )
+    elif args.pipeline == "process_jpg_to_jpg256":
+        process_jpg_to_jpg256(
             set_id=args.set_id,
             output_dir=args.output_dir,
             jpg_quality=args.jpg_quality,

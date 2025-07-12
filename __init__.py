@@ -23,19 +23,18 @@ from .detectors.opencv_detector import OpenCVDetector
 from .autoencoder import (
     ConvAutoencoder,
     SimpleAutoencoder,
-    SimpleAutoencoderDetector,
     train_model,
     get_loss_function,
     get_optimizer,
 )
 
 # Data utilities
-from .data.data_loaders import SimpleBirdDataset, MultiSetBirdDataset
+from .data import SimpleBirdDataset, MultiSetBirdDataset
 
-# Utility functions
-from .utils import *
-from .scores import *
-from .mlflow_utils import *
+# Expose package-level utilities from utils subpackage
+from .utils.mlflow_utils import *
+from .utils.scores import *
+from .utils.color_transforms import *
 
 __all__ = [
     # Detectors
